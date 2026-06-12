@@ -102,6 +102,25 @@ The scaffolded app should be an immediately useful signage starting point that d
 6. Drive display content (title, messages, rotation interval) from **`config.json`** rather than
    hard-coded values — this is the webapp equivalent of gadget preferences.
 
+### 5b. Sourcing dynamic data (external APIs, data tables)
+
+Drive content from data, not hard-coded values:
+
+- **Config / static content** — `config.json` (above).
+- **External APIs** — fetch client-side from the webapp. Keyless, CORS-enabled APIs work best
+  (e.g. Open-Meteo for weather); use `getDevice().location` (lat/long) for geo-aware content.
+- **Revel Digital data tables** — ⚠️ the client-sdk **`createDataTable()` shim is gadget-only**. The
+  player does not inject the data-table library into a full-screen webapp, so calling it there
+  throws. In a webapp, source data-table content one of two ways:
+  - **Bake at deploy time (recommended)** — read the table via the Revel MCP `list_datatable_rows`
+    (or `GET /datatables/{id}/rows`) and write the rows into a bundled JSON (e.g. `tenants.json`) the
+    app fetches at runtime. No secret in the artifact; refresh by re-baking + redeploying. (MCP row
+    *writes* need each row shaped `{ "data": { …values… } }`.)
+  - **Runtime REST fetch** — `GET /datatables/{id}/rows?api_key=…` from the app for live data, but
+    this embeds a scoped read key in the client artifact — only acceptable on trusted players.
+  - For **real-time** data-table binding (`createDataTable().getRows()` + `on('rowUpdated', …)`),
+    build a **gadget** (revel-gadget skill) instead of a webapp.
+
 ### 6. Deploy (per the user's chosen method)
 
 See `references/deploy.md` for all three options. **Default to the MCP method** — it's the lowest
