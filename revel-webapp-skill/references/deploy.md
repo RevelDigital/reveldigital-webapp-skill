@@ -44,11 +44,21 @@ Build and package the artifact the same way for every approach below:
 npm run build                       # produces dist/ (Angular: dist/<name>/)
 ( cd dist && zip -r "../<name>.webapp" . )   # zip CONTENTS so index.html is at the zip root
 ```
+On **Windows**, do **NOT** use `Compress-Archive` from Windows PowerShell 5.1 — it writes
+backslash path separators (`assets\index.js`) that break any webapp with a subfolder (e.g. Vite's
+`assets/`) on Linux/Android players. Use a forward-slash-safe method instead:
+
 ```powershell
-# Windows PowerShell — Compress-Archive needs a .zip name, then rename
-Compress-Archive -Path dist\* -DestinationPath "<name>.zip" -Force
-Rename-Item "<name>.zip" "<name>.webapp"
+# (a) PowerShell 7+ (pwsh) — Compress-Archive here writes correct forward slashes
+pwsh -c "Compress-Archive -Path dist/* -DestinationPath app.zip -Force; Rename-Item app.zip '<name>.webapp'"
 ```
+```bash
+# (b) Any Python 3 — forward slashes, no dependencies (works from PowerShell or bash)
+python -c "import zipfile,os; z=zipfile.ZipFile('<name>.webapp','w',zipfile.ZIP_DEFLATED); [z.write(os.path.join(r,f), os.path.relpath(os.path.join(r,f),'dist').replace(os.sep,'/')) for r,_,fs in os.walk('dist') for f in fs]; z.close()"
+```
+
+> **Verify** the archive's entry names use forward slashes (`assets/index.js`, not
+> `assets\index.js`) before deploying — e.g. `python -c "import zipfile;print(zipfile.ZipFile('<name>.webapp').namelist())"`.
 
 ### A1 — Direct-to-CMS via presigned upload (preferred)
 
