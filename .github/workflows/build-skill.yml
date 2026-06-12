@@ -1,0 +1,79 @@
+name: Build Skill ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'revel-webapp-skill/**'
+
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump level'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build ZIP
+        run: |
+          cd ${{ github.workspace }}
+          rm -f revel-webapp-skill.zip
+          zip -r revel-webapp-skill.zip revel-webapp-skill/ \
+            -x "revel-webapp-skill/.DS_Store" \
+            -x "revel-webapp-skill/**/.DS_Store"
+
+      - name: Commit ZIP
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add revel-webapp-skill.zip
+          git diff --cached --quiet || git commit -m "Rebuild revel-webapp-skill.zip"
+          git push
+
+      - name: Bump version and release
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          LATEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -n 1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          case "${{ inputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "NEW_TAG=$NEW_TAG" >> "$GITHUB_ENV"
+          echo "Bumping $LATEST_TAG -> $NEW_TAG"
+
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+
+      - name: Create Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.NEW_TAG }}
+          files: revel-webapp-skill.zip
+          generate_release_notes: true
