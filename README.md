@@ -45,17 +45,19 @@ React is the recommended default.
 
 Three paths (see the skill's `references/deploy.md`):
 
-1. **GitHub Action (CI)** — deploy on every push via `RevelDigital/webapp-action` (uses a
-   `Revel_API_Key` repo secret). Default.
-2. **From Claude Code via the Revel Digital MCP server** — build and deploy without leaving the
-   conversation, using OAuth (browser login) — no API key in the repo. Connect with
-   `claude mcp add --transport http reveldigital https://mcp.reveldigital.io/mcp`
+1. **Via the Revel Digital MCP server (recommended)** — build and deploy without leaving the
+   conversation, using OAuth (browser login) — no CI, no repo secret, nothing added to the project.
+   Works in any MCP-capable, skill-capable host (Claude Code and others). Connect the endpoint
+   `https://mcp.reveldigital.io/mcp` (Claude Code:
+   `claude mcp add --transport http reveldigital https://mcp.reveldigital.io/mcp`)
    ([MCP docs](https://reveldigital.github.io/reveldigital-mcp-cloudflare/)). Two approaches:
    **direct-to-CMS via presigned upload** (preferred — build → package → `create_media_upload` →
    `curl -T` the bytes straight to S3 → `finalize_media_upload`; the binary never passes through the
    MCP server or the model), or **URL import** (fallback — publish the `.webapp` as a GitHub release
    asset, then `import_media({ url })`).
-3. **Direct REST upload** — a one-off local `curl` multipart upload (binary, API key, no CI).
+2. **GitHub Action (CI)** — automated redeploy on every push via `RevelDigital/webapp-action` (uses a
+   `Revel_API_Key` repo secret). Use when you want CI wired into your git workflow.
+3. **Direct REST upload** — a one-off local `curl` multipart upload (binary, API key, no MCP/CI).
 
 ## Installation
 

@@ -8,23 +8,150 @@ gadgetizer or GitHub Pages — the only deploy target is the CMS.
 
 Pick whichever fits the user's workflow (you can offer more than one):
 
-| Option | When to use | Auth | Needs a public URL? |
-|--------|-------------|------|---------------------|
-| **A — GitHub Action (CI)** | Hands-off deploy on every push | `Revel_API_Key` secret | No (direct binary upload) |
-| **B — Revel Digital MCP server** | Deploy *right now* from inside Claude Code / an MCP-capable AI | OAuth (browser login) | No (B1 presigned → S3); URL only for the B2 fallback |
-| **C — Direct REST upload** | One-off local deploy without CI or MCP | `Revel_API_Key` | No (direct binary upload) |
+| Option | When to use | Auth | Overhead |
+|--------|-------------|------|----------|
+| **A — Revel Digital MCP server** *(recommended)* | Deploy *right now* from your agent, no CI | OAuth (browser login) | **Lowest** — no repo, secret, or workflow |
+| **B — GitHub Action (CI)** | Hands-off redeploy on every `git push` | `Revel_API_Key` secret | A repo + secret + `deploy.yml` |
+| **C — Direct REST upload** | One-off local deploy without MCP or CI | `Revel_API_Key` | A stored API key |
 
-Option A is the default the skill scaffolds. Option B is the answer to "build and deploy from within
-Claude Code" — its preferred form (B1) uploads straight to S3 via a presigned URL, OAuth'd through
-the MCP server. Option C is the manual fallback.
+**Prefer Option A (MCP).** It has the least overhead for the creator — no GitHub repo, no stored
+secret, and no `deploy.yml` to maintain — and it works from **any host that supports skills + MCP**
+(Claude Code and other skill-capable agent frameworks), not just one tool. The build is packaged and
+the bytes go straight to S3 via a presigned URL; only the small control-plane calls go through the
+MCP server, OAuth'd via a browser login.
+
+Use **Option B** when the user specifically wants automated redeploy wired into their git workflow.
+**Option C** is the no-MCP/no-CI local fallback. Only scaffold a `deploy.yml` (Option B) when the
+user opts into CI — the recommended MCP path adds no files to the project.
 
 ---
 
-## Option A — GitHub Action (CI)
+## Option A — Revel Digital MCP server (recommended)
 
-This is the workflow the skill scaffolds when the user wants automated deployment. The
-[`RevelDigital/webapp-action`](https://github.com/RevelDigital/webapp-action) does the zip + upload,
-and an **advisory** quality report audits accessibility/performance without ever failing the build.
+Build and deploy a webapp **without leaving your agent** — no GitHub Actions workflow and no API key
+in the repo. Works in Claude Code and any other MCP-capable, skill-capable host. The Revel Digital
+MCP server authenticates via OAuth (a browser login the first time).
+
+> **Connect the MCP server first.** Streamable HTTP endpoint: `https://mcp.reveldigital.io/mcp`
+> (SSE legacy: `https://mcp.reveldigital.io/sse`). In Claude Code:
+> `claude mcp add --transport http reveldigital https://mcp.reveldigital.io/mcp`, then run any tool
+> once to trigger the OAuth login. Other hosts: add the same endpoint via their MCP configuration.
+> Docs: https://reveldigital.github.io/reveldigital-mcp-cloudflare/
+
+Build and package the artifact the same way for every approach below:
+
+```bash
+npm run build                       # produces dist/ (Angular: dist/<name>/)
+( cd dist && zip -r "../<name>.webapp" . )   # zip CONTENTS so index.html is at the zip root
+```
+```powershell
+# Windows PowerShell — Compress-Archive needs a .zip name, then rename
+Compress-Archive -Path dist\* -DestinationPath "<name>.zip" -Force
+Rename-Item "<name>.zip" "<name>.webapp"
+```
+
+### A1 — Direct-to-CMS via presigned upload (preferred)
+
+The cleanest path: no public hosting, and the binary goes **straight to S3** — it never passes
+through the MCP server or the model's token stream. It uses the PublicAPI presigned-upload endpoints:
+
+| Step | Endpoint | Auth | Returns |
+|------|----------|------|---------|
+| Create slot | `POST /media/uploads` | Bearer (OAuth) **or** `X-RevelDigital-ApiKey` | `{ id, upload_url, method, headers, key, expires_at }` |
+| Upload bytes | `PUT <upload_url>` | **none** (presigned URL is self-authorizing) | — |
+| (Status) | `GET /media/uploads/{id}` | Bearer/apikey | `{ id, status, key, media_id, expires_at }` |
+| Finalize | `POST /media/uploads/{id}/finalize` | Bearer/apikey | the full `Media` record |
+
+Only the bytes step is unauthenticated and local; the three control-plane calls need an account
+credential. Choose the auth path:
+
+**A1a — via the Revel Digital MCP server (OAuth, preferred).** An agent **cannot** read the MCP
+server's OAuth token, so it cannot call the authenticated endpoints itself — let the MCP server make
+them. Requires the server to expose the upload proxy tools (`create_media_upload`,
+`finalize_media_upload`, optional `get_media_upload`). If they are **not** in the connected server's
+tool list, use **A1b** or **A2**.
+
+1. **Create the slot** (MCP, OAuth):
+   ```json
+   create_media_upload({ "name": "<name>.webapp", "content_type": "application/zip", "group_id": "<optional>" })
+   // → { "id": "...", "upload_url": "https://s3...signed...", "method": "PUT", "headers": { "Content-Type": "application/zip" }, "expires_at": "..." }
+   ```
+2. **Upload the bytes** (local, direct to S3 — send the `method` and exact `headers` returned above):
+   ```bash
+   curl -T "<name>.webapp" -H "Content-Type: application/zip" "<upload_url>"
+   ```
+3. **Finalize** (MCP, OAuth) → returns the `Media` record:
+   ```json
+   finalize_media_upload({ "id": "<id from step 1>" })
+   ```
+4. The webapp is now in the CMS and can be scheduled. (Poll `get_media_upload({ id })` between 2 and
+   3 if needed.) **Confirm success** by checking the returned record is webapp-typed —
+   `"mime_type": "application/x-reveldigital-webapp"` (a generic `application/zip` would mean the
+   `.webapp` extension wasn't honored).
+
+**A1b — direct REST with an API key (no MCP).** Same three endpoints, called directly with
+`X-RevelDigital-ApiKey` (no OAuth, no MCP server). Use when the MCP upload tools aren't available and
+a stored key is acceptable.
+
+```bash
+# 1. Create slot
+RESP=$(curl -s -X POST "https://api.reveldigital.com/media/uploads" \
+  -H "X-RevelDigital-ApiKey: $REVEL_API_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"<name>.webapp","content_type":"application/zip"}')
+UPLOAD_URL=$(echo "$RESP" | node -e "process.stdin.once('data',d=>console.log(JSON.parse(d).upload_url))")
+ID=$(echo "$RESP" | node -e "process.stdin.once('data',d=>console.log(JSON.parse(d).id))")
+# 2. Upload bytes straight to S3 (no auth)
+curl -T "<name>.webapp" -H "Content-Type: application/zip" "$UPLOAD_URL"
+# 3. Finalize → Media record
+curl -s -X POST "https://api.reveldigital.com/media/uploads/$ID/finalize" \
+  -H "X-RevelDigital-ApiKey: $REVEL_API_KEY"
+```
+
+Get the API key from the Revel Digital CMS (Account → API); pass it via an env var, never commit it.
+
+### A2 — URL import via `import_media` (fallback)
+
+`import_media({ url, group_id? })` **fetches the file from a public URL** — it does not accept a
+local binary. So publish the `.webapp` to a public URL first; a **GitHub release asset** (via `gh`)
+is the most ergonomic. Use this only when presigned upload (A1) isn't available.
+
+1. **Publish to a public URL** — create a GitHub release and read back the asset URL:
+
+   ```bash
+   gh release create webapp-v<version> "<name>.webapp" \
+     --title "<name> v<version>" --notes "Webapp build for Revel Digital"
+   gh release view webapp-v<version> --json assets --jq '.assets[0].url'
+   ```
+   (Any public host works; the URL should end in `.webapp` so the CMS infers the media type.)
+2. **Choose / create a media group** (optional) — `list_media_groups` for an existing `group_id`, or
+   `create_media_group`. Omit `group_id` for the default group.
+3. **Import** (MCP):
+
+   ```json
+   import_media({ "url": "<public .webapp asset URL>", "group_id": "<optional group id>" })
+   ```
+4. **Verify** — `get_media({ id })` / `list_media`.
+
+### Notes
+
+- **Prefer A1a** (presigned upload via the MCP server) — OAuth, no public hosting, no stored key,
+  and the bytes go straight to S3. Fall back to **A1b** (presigned + API key) when the MCP upload
+  tools aren't available, or **A2** (URL import) when presigned isn't an option at all.
+- Why the control-plane calls go through the MCP server in A1a: an agent cannot read the MCP
+  server's OAuth token, so it can't call the authenticated `/media/uploads` endpoints directly —
+  the server makes those calls. The unauthenticated `PUT` to the presigned URL is the one step the
+  agent does locally.
+- After the media exists, you can drive the rest of signage setup over MCP (create a
+  playlist/schedule, assign to a device group) with the other Revel Digital MCP tools.
+
+---
+
+## Option B — GitHub Action (CI)
+
+Choose this when the user wants automated redeploy on every push. The skill scaffolds
+`.github/workflows/deploy.yml`; [`RevelDigital/webapp-action`](https://github.com/RevelDigital/webapp-action)
+does the zip + upload, and an **advisory** quality report audits accessibility/performance without
+ever failing the build.
 
 ### The `webapp-action` contract
 
@@ -133,131 +260,10 @@ Digital CMS (Account → API). Never commit the key.
 
 ---
 
-## Option B — Deploy from Claude Code via the Revel Digital MCP server
+## Option C — Direct REST upload (local binary, no MCP, no CI)
 
-This lets a user **build and deploy a webapp without leaving Claude Code** (or any MCP-capable AI
-framework) — no GitHub Actions workflow and no API key in the repo. The Revel Digital MCP server
-authenticates via OAuth (a browser login the first time).
-
-> **Connect the MCP server first.** Streamable HTTP endpoint: `https://mcp.reveldigital.io/mcp`
-> (SSE legacy: `https://mcp.reveldigital.io/sse`). In Claude Code:
-> `claude mcp add --transport http reveldigital https://mcp.reveldigital.io/mcp`, then run any tool
-> once to trigger the OAuth login. Docs: https://reveldigital.github.io/reveldigital-mcp-cloudflare/
-
-There are two MCP deploy approaches. **B1 (direct-to-CMS)** is preferred once the server exposes a
-presigned-upload tool; **B2 (URL import)** works with the tools available today. In both, build and
-package the artifact the same way:
-
-```bash
-npm run build                       # produces dist/ (Angular: dist/<name>/)
-( cd dist && zip -r "../<name>.webapp" . )   # zip CONTENTS so index.html is at the zip root
-```
-```powershell
-# Windows PowerShell — Compress-Archive needs a .zip name, then rename
-Compress-Archive -Path dist\* -DestinationPath "<name>.zip" -Force
-Rename-Item "<name>.zip" "<name>.webapp"
-```
-
-### B1 — Direct-to-CMS via presigned upload (preferred)
-
-The cleanest path: no public hosting, and the binary goes **straight to S3** — it never passes
-through the MCP server or the model's token stream. It uses the PublicAPI presigned-upload endpoints:
-
-| Step | Endpoint | Auth | Returns |
-|------|----------|------|---------|
-| Create slot | `POST /media/uploads` | Bearer (OAuth) **or** `X-RevelDigital-ApiKey` | `{ id, upload_url, method, headers, key, expires_at }` |
-| Upload bytes | `PUT <upload_url>` | **none** (presigned URL is self-authorizing) | — |
-| (Status) | `GET /media/uploads/{id}` | Bearer/apikey | `{ id, status, key, media_id, expires_at }` |
-| Finalize | `POST /media/uploads/{id}/finalize` | Bearer/apikey | the full `Media` record |
-
-Only the bytes step is unauthenticated and local; the three control-plane calls need an account
-credential. Choose the auth path:
-
-**B1a — via the Revel Digital MCP server (OAuth, preferred).** An agent **cannot** read the MCP
-server's OAuth token, so it cannot call the authenticated endpoints itself — let the MCP server make
-them. Requires the server to expose the upload proxy tools (`create_media_upload`,
-`finalize_media_upload`, optional `get_media_upload`). If they are **not** in the connected server's
-tool list, use **B1b** or **B2**.
-
-1. **Create the slot** (MCP, OAuth):
-   ```json
-   create_media_upload({ "name": "<name>.webapp", "content_type": "application/zip", "group_id": "<optional>" })
-   // → { "id": "...", "upload_url": "https://s3...signed...", "method": "PUT", "headers": { "Content-Type": "application/zip" }, "expires_at": "..." }
-   ```
-2. **Upload the bytes** (local, direct to S3 — send the `method` and exact `headers` returned above):
-   ```bash
-   curl -T "<name>.webapp" -H "Content-Type: application/zip" "<upload_url>"
-   ```
-3. **Finalize** (MCP, OAuth) → returns the `Media` record:
-   ```json
-   finalize_media_upload({ "id": "<id from step 1>" })
-   ```
-4. The webapp is now in the CMS and can be scheduled. (Poll `get_media_upload({ id })` between 2 and
-   3 if needed.) **Confirm success** by checking the returned record is webapp-typed —
-   `"mime_type": "application/x-reveldigital-webapp"` (a generic `application/zip` would mean the
-   `.webapp` extension wasn't honored).
-
-**B1b — direct REST with an API key (no MCP).** Same three endpoints, called directly with
-`X-RevelDigital-ApiKey` (no OAuth, no MCP server). Use when the MCP upload tools aren't available and
-a stored key is acceptable.
-
-```bash
-# 1. Create slot
-RESP=$(curl -s -X POST "https://api.reveldigital.com/media/uploads" \
-  -H "X-RevelDigital-ApiKey: $REVEL_API_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"<name>.webapp","content_type":"application/zip"}')
-UPLOAD_URL=$(echo "$RESP" | node -e "process.stdin.once('data',d=>console.log(JSON.parse(d).upload_url))")
-ID=$(echo "$RESP" | node -e "process.stdin.once('data',d=>console.log(JSON.parse(d).id))")
-# 2. Upload bytes straight to S3 (no auth)
-curl -T "<name>.webapp" -H "Content-Type: application/zip" "$UPLOAD_URL"
-# 3. Finalize → Media record
-curl -s -X POST "https://api.reveldigital.com/media/uploads/$ID/finalize" \
-  -H "X-RevelDigital-ApiKey: $REVEL_API_KEY"
-```
-
-Get the API key from the Revel Digital CMS (Account → API); pass it via an env var, never commit it.
-
-### B2 — URL import via `import_media` (available today)
-
-`import_media({ url, group_id? })` **fetches the file from a public URL** — it does not accept a
-local binary. So publish the `.webapp` to a public URL first; a **GitHub release asset** (via `gh`)
-is the most ergonomic from inside Claude Code.
-
-1. **Publish to a public URL** — create a GitHub release and read back the asset URL:
-
-   ```bash
-   gh release create webapp-v<version> "<name>.webapp" \
-     --title "<name> v<version>" --notes "Webapp build for Revel Digital"
-   gh release view webapp-v<version> --json assets --jq '.assets[0].url'
-   ```
-   (Any public host works; the URL should end in `.webapp` so the CMS infers the media type.)
-2. **Choose / create a media group** (optional) — `list_media_groups` for an existing `group_id`, or
-   `create_media_group`. Omit `group_id` for the default group.
-3. **Import** (MCP):
-
-   ```json
-   import_media({ "url": "<public .webapp asset URL>", "group_id": "<optional group id>" })
-   ```
-4. **Verify** — `get_media({ id })` / `list_media`.
-
-### Notes
-
-- **Prefer B1a** (presigned upload via the MCP server) — OAuth, no public hosting, no stored key,
-  and the bytes go straight to S3. Fall back to **B1b** (presigned + API key) when the MCP upload
-  tools aren't available, or **B2** (URL import) when presigned isn't an option at all.
-- Why the control-plane calls go through the MCP server in B1a: an agent cannot read the MCP
-  server's OAuth token, so it can't call the authenticated `/media/uploads` endpoints directly —
-  the server makes those calls. The unauthenticated `PUT` to the presigned URL is the one step the
-  agent does locally.
-- After the media exists, you can drive the rest of signage setup over MCP (create a
-  playlist/schedule, assign to a device group) with the other Revel Digital MCP tools.
-
----
-
-## Option C — Direct REST upload (local binary, no CI, no public URL)
-
-The same multipart upload the GitHub Action performs, run locally. Uploads the binary directly (no
-public URL needed) but uses an API key rather than OAuth.
+The same multipart upload the GitHub Action performs, run locally. Uploads the binary directly but
+uses an API key rather than OAuth. Useful for a quick one-off when MCP isn't connected.
 
 ```bash
 npm run build

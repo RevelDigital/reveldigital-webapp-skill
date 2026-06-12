@@ -43,10 +43,13 @@ Before scaffolding, gather:
 - **Theme basics** — a primary/brand color (hex), and whether the default appearance should be
   light, dark, or follow the device (`prefers-color-scheme`). These feed the theme tokens in
   `theme.css`.
-- **How will they deploy?** — offer the options (any combination):
-  - **GitHub Action (CI)** — add `.github/workflows/deploy.yml` to deploy on every push (default).
-  - **From Claude Code via the Revel Digital MCP server** — build and deploy right now in the
-    conversation, no CI (requires the MCP server connected; see step 6 and `references/deploy.md`).
+- **How will they deploy?** — offer the options (recommend the first):
+  - **Via the Revel Digital MCP server (recommended)** — build and deploy right now in the
+    conversation, no CI, no repo secret, no files added to the project. Works in any MCP-capable,
+    skill-capable host (Claude Code and others). Requires the MCP server connected; see step 6 and
+    `references/deploy.md` (Option A).
+  - **GitHub Action (CI)** — add `.github/workflows/deploy.yml` for hands-off redeploy on every
+    `git push` (needs a repo + `Revel_API_Key` secret).
   - **Neither yet** — just scaffold; deploy later.
 
 ### 2. Read the reference files before generating any code
@@ -101,31 +104,34 @@ The scaffolded app should be an immediately useful signage starting point that d
 
 ### 6. Deploy (per the user's chosen method)
 
-See `references/deploy.md` for all three options.
+See `references/deploy.md` for all three options. **Default to the MCP method** — it's the lowest
+overhead (no CI, no secret, no files added) and works in any MCP-capable, skill-capable host.
 
-- **GitHub Action (CI)** — create `.github/workflows/deploy.yml` that checks out, sets up Node,
-  `npm ci`, `npm run build`, then calls `RevelDigital/webapp-action@v1` with
-  `api-key: ${{ secrets.Revel_API_Key }}`. Include the **advisory** accessibility/performance report
-  step (`continue-on-error: true`, writes to `$GITHUB_STEP_SUMMARY`) — it never fails the build.
-  Tell the user to add the `Revel_API_Key` repository secret.
-
-- **From Claude Code via the Revel Digital MCP server** — deploy without CI, directly in the
-  conversation; OAuth (browser login), so no API key is needed. Connect first with
-  `claude mcp add --transport http reveldigital https://mcp.reveldigital.io/mcp`. Two approaches,
-  detailed in `references/deploy.md` (Option B):
-  - **B1, direct-to-CMS via presigned upload (preferred)** — `npm run build` → zip the build folder
+- **Via the Revel Digital MCP server (recommended)** — deploy without CI, directly in the
+  conversation; OAuth (browser login), so no API key is needed. Connect first (Claude Code:
+  `claude mcp add --transport http reveldigital https://mcp.reveldigital.io/mcp`; other hosts: add
+  the same endpoint in their MCP config). Detailed in `references/deploy.md` (Option A):
+  - **A1, direct-to-CMS via presigned upload (preferred)** — `npm run build` → zip the build folder
     *contents* into `<name>.webapp` → `create_media_upload({ name, content_type, group_id? })` (MCP,
     OAuth) → `curl -T <name>.webapp -H "Content-Type: …" "<upload_url>"` (local, straight to S3, no
     auth) → `finalize_media_upload({ id })` (MCP, OAuth). The binary never passes through the MCP
     server or the model. Requires the server's upload proxy tools; if absent, the same three
     PublicAPI endpoints (`POST /media/uploads`, `PUT <upload_url>`, `POST /media/uploads/{id}/finalize`)
-    can be called directly with an `X-RevelDigital-ApiKey`.
-  - **B2, URL import (fallback)** — same build/zip, then publish to a public URL (GitHub release
+    can be called directly with an `X-RevelDigital-ApiKey`. Confirm the finalized record is
+    webapp-typed: `mime_type` = `application/x-reveldigital-webapp`.
+  - **A2, URL import (fallback)** — same build/zip, then publish to a public URL (GitHub release
     asset via `gh`) and call `import_media({ url, group_id? })`. Use when presigned upload isn't
     available.
 
-- **Direct REST upload** — a one-off local `curl` multipart upload (binary, API key, no CI, no
-  public URL). See `references/deploy.md` (Option C).
+- **GitHub Action (CI)** — only when the user wants automated redeploy on push. Create
+  `.github/workflows/deploy.yml` that checks out, sets up Node, `npm ci`, `npm run build`, then calls
+  `RevelDigital/webapp-action@v1` with `api-key: ${{ secrets.Revel_API_Key }}`. Include the
+  **advisory** accessibility/performance report step (`continue-on-error: true`, writes to
+  `$GITHUB_STEP_SUMMARY`) — it never fails the build. Tell the user to add the `Revel_API_Key`
+  repository secret.
+
+- **Direct REST upload** — a one-off local `curl` multipart upload (binary, API key, no MCP, no CI).
+  See `references/deploy.md` (Option C).
 
 ### 7. Tell the user how to run and deploy
 

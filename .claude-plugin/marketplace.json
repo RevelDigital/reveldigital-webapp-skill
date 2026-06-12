@@ -10,7 +10,7 @@
     {
       "name": "revel-webapp",
       "source": "./revel-webapp-skill",
-      "description": "Scaffold and deploy full-screen Revel Digital webapps using the @reveldigital/client-sdk. Signage-ready theme system, Section 508 / WCAG accessibility, and readability are baked in. Supports React, Vue, Angular, and Vanilla JS. Deploy from Claude Code via the Revel Digital MCP server (import_media) or via the webapp-action GitHub Action.",
+      "description": "Scaffold and deploy full-screen Revel Digital webapps using the @reveldigital/client-sdk. Signage-ready theme system, Section 508 / WCAG accessibility, and readability are baked in. Supports React, Vue, Angular, and Vanilla JS. Deploy straight from your AI agent via the Revel Digital MCP server (presigned upload, OAuth), or via the webapp-action GitHub Action.",
       "version": "1.0.0",
       "author": {
         "name": "Revel Digital",
