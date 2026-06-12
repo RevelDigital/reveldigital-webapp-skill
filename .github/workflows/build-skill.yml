@@ -1,19 +1,27 @@
-name: Build Skill ZIP
+name: Build & Release Skill
+
+# On every push that changes the skill (or its version), rebuild the distributable
+# ZIP and commit it back. If the version declared in marketplace.json doesn't yet have
+# a release, cut a GitHub release with the ZIP attached. Bump the version in
+# .claude-plugin/marketplace.json to trigger a new release. The manual workflow_dispatch
+# with a bump level remains available as an escape hatch.
 
 on:
   push:
     branches: [main]
     paths:
       - 'revel-webapp-skill/**'
+      - '.claude-plugin/marketplace.json'
 
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Version bump level'
-        required: true
-        default: 'patch'
+        description: 'Force a semver bump from the latest tag (blank = release the marketplace.json version)'
+        required: false
+        default: ''
         type: choice
         options:
+          - ''
           - patch
           - minor
           - major
@@ -43,37 +51,50 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add revel-webapp-skill.zip
-          git diff --cached --quiet || git commit -m "Rebuild revel-webapp-skill.zip"
+          git diff --cached --quiet || git commit -m "Rebuild revel-webapp-skill.zip [skip ci]"
           git push
 
-      - name: Bump version and release
-        if: github.event_name == 'workflow_dispatch'
+      - name: Determine release version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -n 1)
-          if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG="v0.0.0"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.bump }}" ]; then
+            # Manual: bump from the latest existing tag.
+            LATEST=$(git tag -l 'v*' --sort=-v:refname | head -n1); [ -z "$LATEST" ] && LATEST="v0.0.0"
+            IFS='.' read -r MA MI PA <<< "${LATEST#v}"
+            case "${{ inputs.bump }}" in
+              major) MA=$((MA+1)); MI=0; PA=0 ;;
+              minor) MI=$((MI+1)); PA=0 ;;
+              patch) PA=$((PA+1)) ;;
+            esac
+            TAG="v${MA}.${MI}.${PA}"
+          else
+            # Automatic: use the version declared in marketplace.json.
+            TAG="v$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Skip if this version already has a release or tag (idempotent — no release spam).
+          if gh release view "$TAG" >/dev/null 2>&1 || git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release/tag $TAG already exists — skipping release."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Will release $TAG."
           fi
 
-          VERSION="${LATEST_TAG#v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-
-          case "${{ inputs.bump }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
-
-          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
-          echo "NEW_TAG=$NEW_TAG" >> "$GITHUB_ENV"
-          echo "Bumping $LATEST_TAG -> $NEW_TAG"
-
-          git tag "$NEW_TAG"
-          git push origin "$NEW_TAG"
+      - name: Tag the release commit
+        if: steps.ver.outputs.skip == 'false'
+        run: |
+          git tag "${{ steps.ver.outputs.tag }}"
+          git push origin "${{ steps.ver.outputs.tag }}"
 
       - name: Create Release
-        if: github.event_name == 'workflow_dispatch'
+        if: steps.ver.outputs.skip == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.NEW_TAG }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
           files: revel-webapp-skill.zip
           generate_release_notes: true
