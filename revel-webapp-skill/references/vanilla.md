@@ -234,21 +234,26 @@ async function main() {
     }
   }).catch(() => {})
 
-  // Live device clock (falls back to local time off-device).
-  const tick = async () => {
-    let when: Date
+  // Device clock: format in the device's timezone (getDeviceTimeZoneName), and derive the
+  // device↔local offset from getDeviceTime() once, then tick locally — accurate device time
+  // without calling the player shim every second. Off-device, the offset is 0 (local time).
+  let offsetMs = 0
+  let timeZone: string | undefined
+  client.getDeviceTimeZoneName().then((tz) => { if (tz) timeZone = tz }).catch(() => {})
+  const syncOffset = async () => {
     try {
       const iso = await client.getDeviceTime()
-      when = iso ? new Date(iso) : new Date()
-    } catch {
-      when = new Date()
-    }
-    $('clock').textContent = new Intl.DateTimeFormat(undefined, {
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).format(when)
+      if (iso) offsetMs = new Date(iso).getTime() - Date.now()
+    } catch { offsetMs = 0 }
   }
-  tick()
-  window.setInterval(tick, 1000)
+  const render = () => {
+    $('clock').textContent = new Intl.DateTimeFormat(undefined, {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone,
+    }).format(new Date(Date.now() + offsetMs))
+  }
+  syncOffset().then(render)
+  window.setInterval(render, 1000)
+  window.setInterval(syncOffset, 5 * 60 * 1000)
 
   // Command handling.
   try {

@@ -312,7 +312,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private subs = new Subscription();
   private clockId?: number;
+  private resyncId?: number;
   private rotateId?: number;
+  private offsetMs = 0;          // deviceTime - localTime
+  private timeZone?: string;     // device timezone (IANA)
 
   constructor(public client: PlayerClientService) {
     this.subs.add(
@@ -346,25 +349,31 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }).catch(() => {});
 
-    const tick = async () => {
-      let when: Date;
+    // Render the clock in the DEVICE's timezone, not the browser's.
+    this.client.getDeviceTimeZoneName().then((tz) => { if (tz) this.timeZone = tz; }).catch(() => {});
+
+    // Device clock: derive the device↔local offset from getDeviceTime() once, then tick
+    // locally — accurate device time without calling the player shim every second.
+    const syncOffset = async () => {
       try {
         const iso = await this.client.getDeviceTime();
-        when = iso ? new Date(iso) : new Date();
-      } catch {
-        when = new Date();
-      }
-      this.clock = new Intl.DateTimeFormat(undefined, {
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-      }).format(when);
+        if (iso) this.offsetMs = new Date(iso).getTime() - Date.now();
+      } catch { this.offsetMs = 0; }   // off-device → local time
     };
-    tick();
-    this.clockId = window.setInterval(tick, 1000);
+    const render = () => {
+      this.clock = new Intl.DateTimeFormat(undefined, {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: this.timeZone,
+      }).format(new Date(Date.now() + this.offsetMs));
+    };
+    syncOffset().then(render);
+    this.clockId = window.setInterval(render, 1000);
+    this.resyncId = window.setInterval(syncOffset, 5 * 60 * 1000);
   }
 
   ngOnDestroy() {
     this.subs.unsubscribe();
     if (this.clockId) window.clearInterval(this.clockId);
+    if (this.resyncId) window.clearInterval(this.resyncId);
     if (this.rotateId) window.clearInterval(this.rotateId);
   }
 }

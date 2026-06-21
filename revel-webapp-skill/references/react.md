@@ -228,6 +228,7 @@ import type { IDevice } from '@reveldigital/client-sdk'
 
 export interface PlayerState {
   time: Date | null
+  timeZone: string | null   // device timezone (IANA) — format the clock with this
   device: IDevice | null
   isPreview: boolean
   lastCommand: string | null
@@ -237,6 +238,7 @@ export function usePlayerClient(): PlayerState {
   const [device, setDevice] = useState<IDevice | null>(null)
   const [isPreview, setIsPreview] = useState(false)
   const [time, setTime] = useState<Date | null>(null)
+  const [timeZone, setTimeZone] = useState<string | null>(null)
   const [lastCommand, setLastCommand] = useState<string | null>(null)
 
   useEffect(() => {
@@ -247,17 +249,24 @@ export function usePlayerClient(): PlayerState {
     client.getDevice().then((d) => active && setDevice(d as IDevice | null)).catch(() => {})
     client.isPreviewMode().then((p) => active && setIsPreview(Boolean(p))).catch(() => {})
 
-    // Live clock from device time (falls back to local time off-device).
-    const tick = async () => {
+    // Render the clock in the DEVICE's timezone (getDeviceTimeZoneName), not the browser's.
+    client.getDeviceTimeZoneName().then((tz) => { if (tz && active) setTimeZone(tz) }).catch(() => {})
+
+    // Device clock: use getDeviceTime() to derive the device↔local offset once, then tick
+    // locally — accurate device time without calling the player shim every second.
+    // Re-sync periodically to correct drift. Off-device, offset is 0 (local time).
+    let offsetMs = 0
+    const syncOffset = async () => {
       try {
-        const iso = await client.getDeviceTime()
-        setTime(iso ? new Date(iso) : new Date())
-      } catch {
-        setTime(new Date())
-      }
+        const iso = await client.getDeviceTime()        // device time, ISO8601
+        if (iso) offsetMs = new Date(iso).getTime() - Date.now()
+      } catch { offsetMs = 0 }
     }
-    tick()
-    const clockId = window.setInterval(tick, 1000)
+    syncOffset().then(() => { if (active) setTime(new Date(Date.now() + offsetMs)) })
+    const clockId = window.setInterval(() => {
+      if (active) setTime(new Date(Date.now() + offsetMs))
+    }, 1000)
+    const resyncId = window.setInterval(syncOffset, 5 * 60 * 1000)
 
     // Command handling — react to player commands.
     const onCommand = (data: { name?: string; arg?: string }) => {
@@ -265,7 +274,7 @@ export function usePlayerClient(): PlayerState {
     }
     try { client.on(EventType.COMMAND, onCommand) } catch { /* off-device */ }
 
-    // Set <html lang> from the device language for accessibility.
+    // Set <html lang> from the device language (getLanguageCode), not navigator.language.
     client.getLanguageCode()
       .then((lang) => { if (lang) document.documentElement.lang = lang })
       .catch(() => {})
@@ -273,11 +282,12 @@ export function usePlayerClient(): PlayerState {
     return () => {
       active = false
       window.clearInterval(clockId)
+      window.clearInterval(resyncId)
       try { client.off(EventType.COMMAND) } catch { /* noop */ }
     }
   }, [])
 
-  return { time, device, isPreview, lastCommand }
+  return { time, timeZone, device, isPreview, lastCommand }
 }
 ```
 
@@ -311,7 +321,7 @@ import { usePlayerClient } from './usePlayerClient'
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [msgIndex, setMsgIndex] = useState(0)
-  const { time, device, isPreview, lastCommand } = usePlayerClient()
+  const { time, timeZone, device, isPreview, lastCommand } = usePlayerClient()
 
   useEffect(() => { loadConfig().then(setConfig) }, [])
 
@@ -333,6 +343,7 @@ function App() {
   const clock = time
     ? new Intl.DateTimeFormat(undefined, {
         hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZone: timeZone ?? undefined,   // render in the device's timezone
       }).format(time)
     : '--:--'
 

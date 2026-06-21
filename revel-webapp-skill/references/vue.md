@@ -138,12 +138,15 @@ import { createPlayerClient, EventType } from '@reveldigital/client-sdk'
 
 export function usePlayerClient() {
   const time = ref(null)
+  const timeZone = ref(null)   // device timezone (IANA) — format the clock with this
   const device = ref(null)
   const isPreview = ref(false)
   const lastCommand = ref(null)
 
   let client = null
   let clockId = null
+  let resyncId = null
+  let offsetMs = 0             // deviceTime - localTime
   const onCommand = (data) => {
     lastCommand.value = `${data?.name ?? 'command'}${data?.arg ? `: ${data.arg}` : ''}`
   }
@@ -154,16 +157,20 @@ export function usePlayerClient() {
     client.getDevice().then((d) => { device.value = d }).catch(() => {})
     client.isPreviewMode().then((p) => { isPreview.value = Boolean(p) }).catch(() => {})
 
-    const tick = async () => {
+    // Render the clock in the DEVICE's timezone, not the browser's.
+    client.getDeviceTimeZoneName().then((tz) => { if (tz) timeZone.value = tz }).catch(() => {})
+
+    // Device clock: derive the device↔local offset from getDeviceTime() once, then tick
+    // locally — accurate device time without calling the player shim every second.
+    const syncOffset = async () => {
       try {
         const iso = await client.getDeviceTime()
-        time.value = iso ? new Date(iso) : new Date()
-      } catch {
-        time.value = new Date()
-      }
+        if (iso) offsetMs = new Date(iso).getTime() - Date.now()
+      } catch { offsetMs = 0 }   // off-device → local time
     }
-    tick()
-    clockId = window.setInterval(tick, 1000)
+    syncOffset().then(() => { time.value = new Date(Date.now() + offsetMs) })
+    clockId = window.setInterval(() => { time.value = new Date(Date.now() + offsetMs) }, 1000)
+    resyncId = window.setInterval(syncOffset, 5 * 60 * 1000)
 
     try { client.on(EventType.COMMAND, onCommand) } catch { /* off-device */ }
 
@@ -174,10 +181,11 @@ export function usePlayerClient() {
 
   onUnmounted(() => {
     if (clockId) window.clearInterval(clockId)
+    if (resyncId) window.clearInterval(resyncId)
     try { client?.off(EventType.COMMAND) } catch { /* noop */ }
   })
 
-  return { time, device, isPreview, lastCommand }
+  return { time, timeZone, device, isPreview, lastCommand }
 }
 ```
 
@@ -202,7 +210,7 @@ import { usePlayerClient } from './playerClient'
 
 const config = ref(null)
 const msgIndex = ref(0)
-const { time, device, isPreview, lastCommand } = usePlayerClient()
+const { time, timeZone, device, isPreview, lastCommand } = usePlayerClient()
 
 let rotateId = null
 
@@ -226,6 +234,7 @@ const clock = computed(() =>
   time.value
     ? new Intl.DateTimeFormat(undefined, {
         hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZone: timeZone.value ?? undefined,   // render in the device's timezone
       }).format(time.value)
     : '--:--',
 )

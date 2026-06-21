@@ -89,11 +89,33 @@ Apply `references/signage.md` to every scaffold:
 
 ### 5. Wire up the Client SDK demo UX
 
+**Use the Client SDK, not browser equivalents.** The player exposes device context through the SDK —
+always prefer it over the browser API, and fall back to the browser only when off-device (wrap SDK
+calls in `try`/`.catch()`):
+
+| Need | Use (SDK) | Instead of |
+|------|-----------|------------|
+| Time / clock | `getDeviceTime()` + `getDeviceTimeZoneName()` (format in the device timezone) | `new Date()` rendered in the browser's timezone |
+| Timezone | `getDeviceTimeZoneName()` / `getDeviceTimeZoneID()` / `getDeviceTimeZoneOffset()` | `Intl…resolvedOptions().timeZone` |
+| Language / locale | `getLanguageCode()` (set `<html lang>`) | `navigator.language` |
+| Location (geo) | `getDevice().location` (lat/long, city/state) | `navigator.geolocation` |
+| Screen / zone size | `getWidth()` / `getHeight()` | `window.innerWidth/innerHeight` |
+| Scheduled duration | `getDuration()` | — |
+| Preview vs. live | `isPreviewMode()` | assuming live |
+| Commands | `on(EventType.COMMAND, …)` / `sendCommand()` | — |
+| Analytics | `track()` / `timeEvent()` | — |
+
+> **Device-clock pattern (do this, don't poll the shim every second):** call `getDeviceTime()` once
+> to compute the device↔local offset, tick locally each second from that offset (re-sync every few
+> minutes for drift), and format with `getDeviceTimeZoneName()` so the clock shows the device's
+> wall-clock time regardless of where the browser runs. Off-device, the offset is 0 → local time.
+> See `usePlayerClient` in the framework references for the exact implementation.
+
 The scaffolded app should be an immediately useful signage starting point that demonstrates the SDK:
 
 1. Initialize the client (`createPlayerClient()`, or inject `PlayerClientService` for Angular).
-2. Show a **live device clock** using `getDeviceTime()` (re-read on an interval; respect the device
-   timezone).
+2. Show a **live device clock** per the device-clock pattern above (`getDeviceTime()` offset +
+   `getDeviceTimeZoneName()` formatting) — never a bare `new Date()`.
 3. Show device/location context from `getDevice()` (name, city/state from `location`).
 4. **Handle commands** — subscribe to `EventType.COMMAND` (React/Vue/Vanilla) or `onCommand$`
    (Angular) and react to a sample command.
